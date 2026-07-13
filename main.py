@@ -1,6 +1,6 @@
 """
 Lira Spy Bot — Bot API + TDLib
-С поддержкой исчезающих сообщений, фильтрами, админ-командами
+С поддержкой исчезающих сообщений, фильтрами, улучшенной админ-панелью
 """
 import os
 import json
@@ -88,32 +88,8 @@ def get_media_type(msg):
     if msg.get('document'): return 'document'
     return None
 
-def is_secret_media(msg):
-    """Проверяет, является ли сообщение секретным (исчезающим)"""
-    if not msg:
-        return False
-    
-    # Проверка через media объект
-    if 'media' in msg:
-        media = msg.get('media', {})
-        if isinstance(media, dict) and media.get('ttl_seconds'):
-            return True
-    
-    # Проверка через photo/video объекты
-    for media_type in ['photo', 'video', 'voice', 'video_note', 'document']:
-        if media_type in msg:
-            item = msg[media_type]
-            if isinstance(item, dict) and item.get('ttl_seconds'):
-                return True
-            # Для фото — это список
-            if media_type == 'photo' and isinstance(item, list):
-                for photo in item:
-                    if isinstance(photo, dict) and photo.get('ttl_seconds'):
-                        return True
-    
-    return False
-
 def is_duplicate(chat_id, message_id, event_type, ttl=5):
+    """Проверка дублирования уведомлений"""
     key = f"{chat_id}:{message_id}:{event_type}"
     now = time.time()
     if key in _sent_notifications and now - _sent_notifications[key] < ttl:
@@ -372,7 +348,6 @@ def admin_kb():
         [{'text': '📊 Статистика', 'callback_data': 'adm_stats'}],
         [{'text': '📋 Удаления', 'callback_data': 'adm_deleted'}],
         [{'text': '📋 Редактирования', 'callback_data': 'adm_edited'}],
-        [{'text': '➕ Выдать доступ', 'callback_data': 'adm_grant'}],
         [{'text': '◀️ Назад', 'callback_data': 'main'}],
     ]}
 
@@ -422,21 +397,18 @@ async def handle_message(msg, is_business=False):
     except Exception:
         pass
 
-    # Проверяем, является ли это сообщение ответом на секретное
+    # Проверяем, является ли это сообщение ответом (для пересылки медиа)
     reply = msg.get('reply_to_message')
-    is_secret_reply = False
-    if reply:
-        # Проверяем, было ли оригинальное сообщение секретным
-        if is_secret_media(reply):
-            is_secret_reply = True
-            logger.info(f"Обнаружен ответ на секретное сообщение: {message_id} -> {reply.get('message_id')}")
+    is_reply = bool(reply)
 
-    # Отправляем медиа, если это бизнес-сообщение ИЛИ ответ на секретное
-    if media_type and (is_business or is_secret_reply):
+    # Отправляем медиа, если:
+    # - это бизнес-сообщение ИЛИ
+    # - это ответ на любое сообщение (позволяет пересылать исчезающие через ответ)
+    if media_type and (is_business or is_reply):
         for admin_id in _admin_ids:
             s = get_cached_settings(admin_id)
             if s.get('notify_media') and should_notify(admin_id, chat_id, user_id):
-                extra = "🔥 Исчезающее (ответ)" if is_secret_reply else ""
+                extra = "📎 Ответ" if is_reply and not is_business else ""
                 send_media_to_admin(msg, chat_id, caption_extra=extra)
 
     # Обработка команд
@@ -504,7 +476,7 @@ async def handle_message(msg, is_business=False):
                 send(chat_id, "❌ Используйте: /revoke <user_id>")
 
 # ============================================================
-# CALLBACK HANDLER
+# CALLBACK HANDLER (С УЛУЧШЕННОЙ АДМИНКОЙ)
 # ============================================================
 
 async def handle_callback(query):
@@ -592,9 +564,9 @@ async def handle_callback(query):
     elif data == 'how_media':
         send(chat_id,
             "📸 <b>Медиа и исчезающие сообщения</b>\n\n"
-            "Бот автоматически пересылает все медиафайлы.\n\n"
+            "Бот автоматически пересылает все медиафайлы из бизнес-чатов.\n\n"
             "🔥 <b>Исчезающие сообщения</b>:\n"
-            "Просто ответьте на такое сообщение — бот перешлёт его содержимое.\n\n"
+            "Просто ответьте на такое сообщение (Reply) — бот перешлёт его содержимое вам.\n\n"
             "Включить/выключить: Настройки → Медиа")
     elif data == 'how_filters':
         send(chat_id,
@@ -618,16 +590,133 @@ async def handle_callback(query):
             "Приглашай друзей: @liraspy_bot")
     elif data == 'admin' and is_admin(user_id):
         send(chat_id, "👑 <b>Админ-панель</b>", reply_markup=admin_kb())
-    elif data == 'adm_users':
+    
+    # ===== УЛУЧШЕННЫЙ СПИСОК ПОЛЬЗОВАТЕЛЕЙ =====
+    elif data == 'adm_users' and is_admin(user_id):
         users = await db.get_all_users()
-        text = f"👥 <b>Пользователи ({len(users)}):</b>\n\n"
-        for i, u in enumerate(users, 1):
-            s = "🟢" if u.get('status') == 'active' else "🔴"
-            r = "👑" if u.get('role') == 'admin' else "👤"
-            n = u.get('first_name', '?')
-            text += f"{i}. {s} {r} <b>{n}</b>\n"
-        send(chat_id, text)
-    elif data == 'adm_stats':
+        if not users:
+            send(chat_id, "📭 Нет пользователей.")
+            return
+        
+        keyboard = []
+        row = []
+        for u in users:
+            status = "🟢" if u.get('status') == 'active' else "🔴"
+            name = u.get('first_name', '?')[:15]
+            btn_text = f"{status} {name}"
+            callback_data = f"user_{u['id']}"
+            row.append({'text': btn_text, 'callback_data': callback_data})
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+        keyboard.append([{'text': '◀️ Назад', 'callback_data': 'admin'}])
+        
+        send(chat_id, "👥 <b>Выберите пользователя:</b>", reply_markup={'inline_keyboard': keyboard})
+    
+    # ===== ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ =====
+    elif data.startswith('user_') and is_admin(user_id):
+        target_id = int(data.split('_')[1])
+        user_data = await db.get_user(target_id)
+        if not user_data:
+            send(chat_id, "❌ Пользователь не найден.")
+            return
+        
+        status = "🟢 Активен" if user_data.get('status') == 'active' else "🔴 Заблокирован"
+        is_target_admin = target_id in _admin_ids
+        role = "👑 Админ" if is_target_admin else "👤 Пользователь"
+        name = user_data.get('first_name', 'Без имени')
+        username = user_data.get('username', '')
+        mention = f"@{username}" if username else name
+        
+        text = (
+            f"👤 <b>{mention}</b>\n"
+            f"🆔 <code>{target_id}</code>\n"
+            f"📊 {status}\n"
+            f"🔑 {role}\n"
+        )
+        
+        keyboard = []
+        if is_target_admin:
+            if target_id != CREATOR_ID:
+                keyboard.append([{'text': '🔴 Отозвать доступ', 'callback_data': f'revoke_{target_id}'}])
+        else:
+            keyboard.append([{'text': '🟢 Выдать доступ', 'callback_data': f'grant_{target_id}'}])
+        keyboard.append([{'text': '◀️ Назад к списку', 'callback_data': 'adm_users'}])
+        
+        send(chat_id, text, reply_markup={'inline_keyboard': keyboard})
+    
+    # ===== ВЫДАТЬ ДОСТУП =====
+    elif data.startswith('grant_') and is_admin(user_id):
+        target_id = int(data.split('_')[1])
+        if target_id in _admin_ids:
+            send(chat_id, "ℹ️ Пользователь уже имеет доступ.")
+        else:
+            if await db.add_admin(target_id):
+                _admin_ids.append(target_id)
+                send(chat_id, f"✅ Пользователю <code>{target_id}</code> выдан доступ.")
+                send(target_id, "🎉 Вам выдан доступ к боту Lira Spy Bot!")
+            else:
+                send(chat_id, "❌ Ошибка выдачи доступа.")
+        # Возвращаемся к списку
+        # Вызовем повторно обработку adm_users (можно использовать функцию, но для простоты повторим код)
+        users = await db.get_all_users()
+        if users:
+            keyboard = []
+            row = []
+            for u in users:
+                status = "🟢" if u.get('status') == 'active' else "🔴"
+                name = u.get('first_name', '?')[:15]
+                btn_text = f"{status} {name}"
+                callback_data = f"user_{u['id']}"
+                row.append({'text': btn_text, 'callback_data': callback_data})
+                if len(row) == 2:
+                    keyboard.append(row)
+                    row = []
+            if row:
+                keyboard.append(row)
+            keyboard.append([{'text': '◀️ Назад', 'callback_data': 'admin'}])
+            send(chat_id, "👥 <b>Список пользователей:</b>", reply_markup={'inline_keyboard': keyboard})
+        else:
+            send(chat_id, "📭 Нет пользователей.")
+    
+    # ===== ОТОЗВАТЬ ДОСТУП =====
+    elif data.startswith('revoke_') and is_admin(user_id):
+        target_id = int(data.split('_')[1])
+        if target_id == CREATOR_ID:
+            send(chat_id, "❌ Нельзя отозвать доступ у создателя.")
+        elif target_id in _admin_ids:
+            if await db.remove_admin(target_id):
+                _admin_ids.remove(target_id)
+                send(chat_id, f"✅ Доступ отозван у <code>{target_id}</code>.")
+            else:
+                send(chat_id, "❌ Ошибка отзыва доступа.")
+        else:
+            send(chat_id, "ℹ️ Пользователь не имеет доступа.")
+        # Возврат к списку
+        users = await db.get_all_users()
+        if users:
+            keyboard = []
+            row = []
+            for u in users:
+                status = "🟢" if u.get('status') == 'active' else "🔴"
+                name = u.get('first_name', '?')[:15]
+                btn_text = f"{status} {name}"
+                callback_data = f"user_{u['id']}"
+                row.append({'text': btn_text, 'callback_data': callback_data})
+                if len(row) == 2:
+                    keyboard.append(row)
+                    row = []
+            if row:
+                keyboard.append(row)
+            keyboard.append([{'text': '◀️ Назад', 'callback_data': 'admin'}])
+            send(chat_id, "👥 <b>Список пользователей:</b>", reply_markup={'inline_keyboard': keyboard})
+        else:
+            send(chat_id, "📭 Нет пользователей.")
+    
+    # ===== СТАТИСТИКА, УДАЛЕНИЯ, РЕДАКТИРОВАНИЯ =====
+    elif data == 'adm_stats' and is_admin(user_id):
         users = await db.get_all_users()
         active = len([u for u in users if u.get('status') == 'active'])
         try:
@@ -637,7 +726,8 @@ async def handle_callback(query):
         except Exception:
             total_msgs = '?'
         send(chat_id, f"📊 <b>Статистика</b>\n\n👥 {len(users)} (активных: {active})\n💬 Сообщений: {total_msgs}")
-    elif data == 'adm_deleted':
+    
+    elif data == 'adm_deleted' and is_admin(user_id):
         try:
             resp = requests.get(f"{SUPABASE_URL}/rest/v1/deleted_messages", params={
                 'select': 'from_username, original_text, deleted_at',
@@ -655,7 +745,8 @@ async def handle_callback(query):
                 txt = (d.get('original_text') or '')[:50]
                 text += f"• {name}: {txt}\n"
             send(chat_id, text)
-    elif data == 'adm_edited':
+    
+    elif data == 'adm_edited' and is_admin(user_id):
         try:
             resp = requests.get(f"{SUPABASE_URL}/rest/v1/edited_messages", params={
                 'select': 'from_username, old_text, new_text, edited_at',
@@ -674,11 +765,6 @@ async def handle_callback(query):
                 new = (e.get('new_text') or '')[:30]
                 text += f"• {name}: {old} → {new}\n"
             send(chat_id, text)
-    elif data == 'adm_grant' and is_admin(user_id):
-        send(chat_id,
-            "➕ <b>Выдача доступа</b>\n\n"
-            "Команда: /grant <user_id>\n\n"
-            "Пользователь узнаёт свой ID через /myid")
 
 # ============================================================
 # BOT COMMANDS
@@ -789,7 +875,9 @@ async def handle_edited_message(msg, is_business=False):
 
     if user_id == CREATOR_ID:
         return
-    if is_duplicate(chat_id, message_id, 'edit'):
+
+    event_type = 'edit_business' if is_business else 'edit'
+    if is_duplicate(chat_id, message_id, event_type):
         return
 
     for admin_id in _admin_ids:
@@ -835,7 +923,8 @@ async def handle_deleted_messages(update):
             continue
 
         for msg_id in message_ids:
-            if is_duplicate(chat_id, msg_id, f'delete_{admin_id}'):
+            event_type = f'delete_{admin_id}'
+            if is_duplicate(chat_id, msg_id, event_type):
                 continue
 
             msg_data = await db.get_message(msg_id, chat_id)
