@@ -41,6 +41,47 @@ class SupabaseClient:
             logger.error(f"Error adding message: {e}")
             return None
 
+    async def save_message_raw(self, data: dict):
+        """Сохранение сырого сообщения (для main.py)"""
+        try:
+            result = await self._run(self.client.table('messages').insert(data))
+            return result.data[0] if isinstance(result.data, list) and result.data else None
+        except Exception as e:
+            logger.error(f"Error saving raw message: {e}")
+            return None
+
+    async def update_message_text(self, message_id: int, chat_id: int, new_text: str):
+        """Обновление текста сообщения (при редактировании)"""
+        try:
+            result = await self._run(
+                self.client.table('messages')
+                .update({'text': new_text})
+                .eq('message_id', message_id)
+                .eq('chat_id', chat_id)
+            )
+            return result.data[0] if isinstance(result.data, list) and result.data else None
+        except Exception as e:
+            logger.error(f"Error updating message text: {e}")
+            return None
+
+    async def save_edited_message_raw(self, data: dict):
+        """Сохранение записи о редактировании"""
+        try:
+            result = await self._run(self.client.table('edited_messages').insert(data))
+            return result.data[0] if isinstance(result.data, list) and result.data else None
+        except Exception as e:
+            logger.error(f"Error saving edited message: {e}")
+            return None
+
+    async def save_deleted_message_raw(self, data: dict):
+        """Сохранение записи об удалении"""
+        try:
+            result = await self._run(self.client.table('deleted_messages').insert(data))
+            return result.data[0] if isinstance(result.data, list) and result.data else None
+        except Exception as e:
+            logger.error(f"Error saving deleted message: {e}")
+            return None
+
     # ---------- Users ----------
     async def get_user(self, user_id: int):
         try:
@@ -60,16 +101,16 @@ class SupabaseClient:
             logger.error(f"Error adding user: {e}")
             return None
 
-    async def create_user(self, user_id: int, first_name: str, last_name: str, username: str, phone: str = None):
+    # Исправленная сигнатура для main.py
+    async def create_user(self, user_id: int, username: str, first_name: str, role: str = 'user'):
         user_data = {
             'id': user_id,
-            'telegram_id': user_id,  # исправлено: добавляем обязательное поле
-            'first_name': first_name,
-            'last_name': last_name,
+            'telegram_id': user_id,          # обязательное поле
             'username': username,
+            'first_name': first_name,
+            'role': role,
+            'status': 'active'
         }
-        if phone:
-            user_data['phone'] = phone
         return await self.add_user(user_data)
 
     async def update_user(self, user_id: int, update_data: dict):
@@ -79,6 +120,26 @@ class SupabaseClient:
         except Exception as e:
             logger.error(f"Error updating user: {e}")
             return None
+
+    async def get_all_users(self):
+        """Получение всех пользователей"""
+        try:
+            result = await self._run(self.client.table('users').select('*'))
+            return result.data if isinstance(result.data, list) else []
+        except Exception as e:
+            logger.error(f"Error getting all users: {e}")
+            return []
+
+    async def get_all_active_user_ids(self):
+        """Получение ID всех активных пользователей"""
+        try:
+            result = await self._run(self.client.table('users').select('id').eq('status', 'active'))
+            if isinstance(result.data, list):
+                return [u['id'] for u in result.data]
+            return []
+        except Exception as e:
+            logger.error(f"Error getting active users: {e}")
+            return []
 
     # ---------- Sessions ----------
     async def get_session(self, user_id: int):
