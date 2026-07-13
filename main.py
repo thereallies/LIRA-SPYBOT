@@ -710,4 +710,64 @@ async def cmd_help(chat_id):
         "• /grant <user_id> — выдать доступ\n"
         "• /revoke <user_id> — отозвать доступ\n"
         "• /broadcast <текст> — рассылка\n"
-        "• /ban <user_id> — блоки
+        "• /ban <user_id> — блокировка"
+    )
+    send(chat_id, text)
+
+# ============================================================
+# MAIN LOOP
+# ============================================================
+
+def get_updates():
+    global offset
+    try:
+        resp = requests.get(f"{API_BASE}/getUpdates", params={
+            'offset': offset,
+            'timeout': 30,
+            'allowed_updates': json.dumps([
+                'message', 'edited_message', 'callback_query',
+                'business_message', 'edited_business_message',
+                'deleted_business_messages'
+            ])
+        }, timeout=35)
+        data = resp.json()
+        if data.get('ok'):
+            for u in data.get('result', []):
+                offset = u['update_id'] + 1
+            return data.get('result', [])
+    except Exception:
+        pass
+    return []
+
+async def main():
+    logger.info("Bot starting...")
+    await load_admins()
+    me = api('getMe')
+    if me and me.get('ok'):
+        logger.info(f"Bot: @{me['result'].get('username')}")
+    if tdlib.start():
+        logger.info("TDLib started for media downloads")
+    api('setMyCommands', {
+        'commands': [
+            {'command': 'start', 'description': 'Главное меню'},
+            {'command': 'settings', 'description': 'Настройки'},
+            {'command': 'filters', 'description': 'Фильтры'},
+            {'command': 'myid', 'description': 'Мой ID'},
+            {'command': 'help', 'description': 'Помощь'},
+        ]
+    })
+    logger.info("Listening...")
+    while True:
+        updates = get_updates()
+        for u in updates:
+            try:
+                if 'callback_query' in u:
+                    await handle_callback(u['callback_query'])
+                elif 'message' in u:
+                    await handle_message(u['message'], False)
+                elif 'business_message' in u:
+                    await handle_message(u['business_message'], True)
+                elif 'edited_message' in u:
+                    await handle_edited_message(u['edited_message'], False)
+                elif 'edited_business_message' in u:
+                    await handle_edited_message(u['edited_business_message'],
