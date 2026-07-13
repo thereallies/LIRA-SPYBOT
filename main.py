@@ -85,7 +85,7 @@ def is_admin(user_id):
 
 
 # ============================================================
-# КЭШ И ФИЛЬТРЫ
+# КЭШ И ФИЛЬТРЫ (ИСПРАВЛЕНЫ)
 # ============================================================
 
 def get_cached_settings(user_id):
@@ -98,7 +98,10 @@ def get_cached_settings(user_id):
             'select': '*', 'user_id': f'eq.{user_id}'
         }, headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'}, timeout=5)
         data = resp.json()
-        settings = data[0] if data else {'notify_deleted': True, 'notify_edited': True, 'notify_media': True}
+        if isinstance(data, list) and data:
+            settings = data[0]
+        else:
+            settings = {'notify_deleted': True, 'notify_edited': True, 'notify_media': True}
     except Exception:
         settings = {'notify_deleted': True, 'notify_edited': True, 'notify_media': True}
     _settings_cache[user_id] = settings
@@ -112,7 +115,6 @@ def invalidate_settings_cache(user_id):
 
 
 def get_user_filters(user_id):
-    """Получение фильтров пользователя (с кэшем)"""
     now = time.time()
     if user_id in _filters_cache:
         if now - _filters_cache_time.get(user_id, 0) < CACHE_TTL:
@@ -122,6 +124,8 @@ def get_user_filters(user_id):
             'select': '*', 'user_id': f'eq.{user_id}'
         }, headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'}, timeout=5)
         filters = resp.json()
+        if not isinstance(filters, list):
+            filters = []
     except Exception:
         filters = []
     _filters_cache[user_id] = filters
@@ -130,15 +134,13 @@ def get_user_filters(user_id):
 
 
 def should_notify(user_id, chat_id, sender_id):
-    """Проверяет нужно ли отправлять уведомление по фильтрам"""
     filters = get_user_filters(user_id)
     if not filters:
-        return True  # Нет фильтров — уведомляем всегда
+        return True
 
     include = [f for f in filters if f['filter_type'] == 'include']
     exclude = [f for f in filters if f['filter_type'] == 'exclude']
 
-    # Если есть include-фильтры — уведомляем ТОЛЬКО для включённых
     if include:
         for f in include:
             if f['target_type'] == 'chat' and f['target_id'] == chat_id:
@@ -147,7 +149,6 @@ def should_notify(user_id, chat_id, sender_id):
                 return True
         return False
 
-    # Если есть exclude-фильтры — НЕ уведомляем для исключённых
     for f in exclude:
         if f['target_type'] == 'chat' and f['target_id'] == chat_id:
             return False
@@ -162,16 +163,12 @@ def should_notify(user_id, chat_id, sender_id):
 # ============================================================
 
 class TDLibClient:
-    """Клиент для скачивания медиа через TDLib"""
-
     def __init__(self):
         self.process = None
         self.connected = False
 
     def start(self):
-        """Запуск TDLib клиента"""
         try:
-            # Проверяем наличие TDLib
             if os.path.exists(TDLIB_PATH):
                 self.process = subprocess.Popen(
                     [TDLIB_PATH],
@@ -190,7 +187,6 @@ class TDLibClient:
             return False
 
     def send_request(self, request):
-        """Отправка запроса в TDLib"""
         if not self.connected or not self.process:
             return None
         try:
@@ -204,17 +200,14 @@ class TDLibClient:
         return None
 
     def download_file(self, file_id, path):
-        """Скачивание файла через TDLib"""
         request = {
             '@type': 'downloadFile',
             'file_id': file_id,
             'priority': 1
         }
-        result = self.send_request(request)
-        return result
+        return self.send_request(request)
 
     def stop(self):
-        """Остановка TDLib"""
         if self.process:
             self.process.terminate()
             self.connected = False
@@ -228,7 +221,6 @@ tdlib = TDLibClient()
 # ============================================================
 
 def download_telegram_file(file_id):
-    """Скачать файл через Bot API"""
     try:
         file_info = api('getFile', {'file_id': file_id})
         if not file_info or not file_info.get('ok'):
@@ -249,7 +241,6 @@ def download_telegram_file(file_id):
 
 
 def send_media_to_admin(msg, chat_id):
-    """Переслать медиа админу"""
     sender = msg.get('from', {})
     sender_name = sender.get('first_name', 'Unknown')
     sender_id = sender.get('id', 0)
@@ -412,7 +403,6 @@ async def handle_message(msg, is_business=False):
     except Exception:
         pass
 
-    # Медиа из бизнес-сообщений
     if is_business and media_type:
         s = get_cached_settings(CREATOR_ID)
         if s.get('notify_media') and should_notify(CREATOR_ID, chat_id, user_id):
@@ -460,7 +450,6 @@ async def handle_callback(query):
         logger.error(f"Callback parse error: {e}")
         return
 
-    # === ГЛАВНОЕ МЕНЮ ===
     if data == 'main':
         send(chat_id, "👋 <b>Lira Spy Bot</b>\n\nВыберите действие:",
              reply_markup=main_menu(is_admin(user_id)))
@@ -475,7 +464,6 @@ async def handle_callback(query):
     elif data == 'instructions':
         send(chat_id, "📋 <b>Инструкции</b>", reply_markup=instructions_kb())
 
-    # === НАСТРОЙКИ ===
     elif data == 'settings':
         send(chat_id, "⚙️ <b>Настройки</b>", reply_markup=settings_kb(user_id))
 
@@ -492,14 +480,12 @@ async def handle_callback(query):
         send(chat_id, "⚙️ <b>Настройки</b>", reply_markup=settings_kb(user_id))
 
     elif data == 'toggle_media':
-        # notify_media пока не в БД — просто переключаем в кэше
         s = get_cached_settings(user_id)
         new_val = not s.get('notify_media', True)
         s['notify_media'] = new_val
         _settings_cache[user_id] = s
         send(chat_id, "⚙️ <b>Настройки</b>", reply_markup=settings_kb(user_id))
 
-    # === ФИЛЬТРЫ ===
     elif data == 'filters':
         send(chat_id, "🎯 <b>Фильтры</b>\n\nВыберите что отслеживать:",
              reply_markup=filters_kb(user_id))
@@ -540,7 +526,6 @@ async def handle_callback(query):
         except Exception:
             send(chat_id, "❌ Ошибка удаления фильтров")
 
-    # === ИНСТРУКЦИИ ===
     elif data == 'how_connect':
         send(chat_id,
             "🔌 <b>Как подключить</b>\n\n"
@@ -574,7 +559,6 @@ async def handle_callback(query):
             "Ссылка: @liraspy_bot\n\n"
             "Скоро будут бонусы!")
 
-    # === АДМИНКА ===
     elif data == 'admin' and is_admin(user_id):
         send(chat_id, "👑 <b>Админ-панель</b>", reply_markup=admin_kb())
 
@@ -697,7 +681,6 @@ async def main():
     if me and me.get('ok'):
         logger.info(f"Bot: @{me['result'].get('username')}")
 
-    # Запускаем TDLib если доступен
     if tdlib.start():
         logger.info("TDLib started for media downloads")
 
@@ -753,7 +736,6 @@ async def handle_edited_message(msg, is_business=False):
         return
 
     old_msg = await db.get_message(message_id, chat_id)
-    # ✅ ИСПРАВЛЕНИЕ: проверяем, что old_msg — словарь
     if old_msg and isinstance(old_msg, dict) and old_msg.get('text') != new_text:
         await db.save_edited_message_raw({
             'original_message_id': old_msg.get('id'),
@@ -788,7 +770,6 @@ async def handle_deleted_messages(update):
 
     for msg_id in message_ids:
         msg_data = await db.get_message(msg_id, chat_id)
-        # ✅ ИСПРАВЛЕНИЕ: проверяем, что msg_data — словарь
         if not msg_data or not isinstance(msg_data, dict):
             continue
 
