@@ -770,4 +770,102 @@ async def main():
                 elif 'edited_message' in u:
                     await handle_edited_message(u['edited_message'], False)
                 elif 'edited_business_message' in u:
-                    await handle_edited_message(u['edited_business_message'],
+                    await handle_edited_message(u['edited_business_message'], True)
+                elif 'deleted_business_messages' in u:
+                    await handle_deleted_messages(u['deleted_business_messages'])
+            except Exception as e:
+                logger.error(f"Error: {e}")
+        await asyncio.sleep(0.05)
+
+# ============================================================
+# ОБРАБОТЧИКИ РЕДАКТИРОВАНИЙ И УДАЛЕНИЙ
+# ============================================================
+
+async def handle_edited_message(msg, is_business=False):
+    chat_id = msg['chat']['id']
+    message_id = msg['message_id']
+    new_text = msg.get('text', '')
+    user_id = msg.get('from', {}).get('id')
+
+    if user_id == CREATOR_ID:
+        return
+    if is_duplicate(chat_id, message_id, 'edit'):
+        return
+
+    for admin_id in _admin_ids:
+        s = get_cached_settings(admin_id)
+        if not s.get('notify_edited'):
+            continue
+        if not should_notify(admin_id, chat_id, user_id):
+            continue
+
+        old_msg = await db.get_message(message_id, chat_id)
+        if old_msg and isinstance(old_msg, dict) and old_msg.get('text') != new_text:
+            if admin_id == _admin_ids[0]:
+                await db.save_edited_message_raw({
+                    'original_message_id': old_msg.get('id'),
+                    'chat_id': chat_id,
+                    'from_user_id': user_id,
+                    'from_username': msg.get('from', {}).get('username'),
+                    'old_text': old_msg.get('text', ''),
+                    'new_text': new_text,
+                    'sent_at': old_msg.get('sent_at'),
+                })
+                await db.update_message_text(message_id, chat_id, new_text)
+
+            sender = msg.get('from', {})
+            sender_name = sender.get('first_name', 'Unknown')
+            sender_username = sender.get('username')
+            mention = f"@{sender_username}" if sender_username else sender_name
+            old_p = (old_msg.get('text', '') or '')[:150]
+            new_p = (new_text or '')[:150]
+            send(admin_id,
+                f"✏️ <b>Редактирование</b>\n\n"
+                f"👤 {mention} | 💬 Чат: {chat_id}\n\n"
+                f"❌ <code>{old_p}</code>\n"
+                f"✅ <code>{new_p}</code>")
+
+async def handle_deleted_messages(update):
+    chat_id = update.get('chat', {}).get('id')
+    message_ids = update.get('message_ids', [])
+
+    for admin_id in _admin_ids:
+        s = get_cached_settings(admin_id)
+        if not s.get('notify_deleted'):
+            continue
+
+        for msg_id in message_ids:
+            if is_duplicate(chat_id, msg_id, f'delete_{admin_id}'):
+                continue
+
+            msg_data = await db.get_message(msg_id, chat_id)
+            if not msg_data or not isinstance(msg_data, dict):
+                continue
+
+            from_user_id = msg_data.get('from_user_id')
+            if from_user_id == admin_id:
+                continue
+            if not should_notify(admin_id, chat_id, from_user_id):
+                continue
+
+            if admin_id == _admin_ids[0]:
+                await db.save_deleted_message_raw({
+                    'original_message_id': msg_data.get('id'),
+                    'chat_id': chat_id,
+                    'from_user_id': from_user_id,
+                    'from_username': msg_data.get('from_username'),
+                    'original_text': msg_data.get('text'),
+                    'media_type': msg_data.get('media_type'),
+                    'sent_at': msg_data.get('sent_at'),
+                })
+
+            text = (msg_data.get('text', '') or '')[:200]
+            username = msg_data.get('from_username')
+            mention = f"@{username}" if username else 'Unknown'
+            send(admin_id,
+                f"🗑 <b>Удалено</b>\n\n"
+                f"👤 {mention} | 💬 Чат: {chat_id}\n"
+                f"📝 {text}")
+
+if __name__ == '__main__':
+    asyncio.run(main())
