@@ -62,15 +62,16 @@ class SupabaseClient:
             return None
 
     # Метод create_user с правильной сигнатурой (5 параметров)
-    async def create_user(self, user_id: int, first_name: str, last_name: str, username: str, phone: str):
-        user_data = {
-            'id': user_id,          # используем 'id', потому что столбец называется id
-            'first_name': first_name,
-            'last_name': last_name,
-            'username': username,
-            'phone': phone
-        }
-        return await self.add_user(user_data)
+    async def create_user(self, user_id: int, first_name: str, last_name: str, username: str, phone: str = None):
+    user_data = {
+        'id': user_id,
+        'first_name': first_name,
+        'last_name': last_name,
+        'username': username,
+    }
+    if phone:
+        user_data['phone'] = phone
+    return await self.add_user(user_data)
 
     async def update_user(self, user_id: int, update_data: dict):
         try:
