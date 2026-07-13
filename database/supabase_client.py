@@ -19,13 +19,13 @@ class SupabaseClient:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, coro.execute)
 
+    # ---------- Messages ----------
     async def get_message(self, message_id: int, chat_id: int = None):
         try:
             query = self.client.table('messages').select('*').eq('message_id', message_id)
             if chat_id:
                 query = query.eq('chat_id', chat_id)
             result = await self._run(query)
-            # Исправление: проверяем, что data — список
             if isinstance(result.data, list) and result.data:
                 return result.data[0]
             return None
@@ -41,9 +41,11 @@ class SupabaseClient:
             logger.error(f"Error adding message: {e}")
             return None
 
+    # ---------- Users ----------
+    # Используем столбец 'id' (так как 'user_id' отсутствует)
     async def get_user(self, user_id: int):
         try:
-            result = await self._run(self.client.table('users').select('*').eq('user_id', user_id))
+            result = await self._run(self.client.table('users').select('*').eq('id', user_id))
             if isinstance(result.data, list) and result.data:
                 return result.data[0]
             return None
@@ -59,18 +61,26 @@ class SupabaseClient:
             logger.error(f"Error adding user: {e}")
             return None
 
-    # Добавляем метод create_user, который вызывает add_user
-    async def create_user(self, user_data: dict):
+    # Метод create_user с правильной сигнатурой (5 параметров)
+    async def create_user(self, user_id: int, first_name: str, last_name: str, username: str, phone: str):
+        user_data = {
+            'id': user_id,          # используем 'id', потому что столбец называется id
+            'first_name': first_name,
+            'last_name': last_name,
+            'username': username,
+            'phone': phone
+        }
         return await self.add_user(user_data)
 
     async def update_user(self, user_id: int, update_data: dict):
         try:
-            result = await self._run(self.client.table('users').update(update_data).eq('user_id', user_id))
+            result = await self._run(self.client.table('users').update(update_data).eq('id', user_id))
             return result.data[0] if isinstance(result.data, list) and result.data else None
         except Exception as e:
             logger.error(f"Error updating user: {e}")
             return None
 
+    # ---------- Sessions ----------
     async def get_session(self, user_id: int):
         try:
             result = await self._run(self.client.table('sessions').select('*').eq('user_id', user_id))
@@ -97,6 +107,7 @@ class SupabaseClient:
             logger.error(f"Error updating session: {e}")
             return None
 
+    # ---------- User Settings ----------
     async def get_user_settings(self, user_id: int):
         try:
             result = await self._run(self.client.table('user_settings').select('*').eq('user_id', user_id))
