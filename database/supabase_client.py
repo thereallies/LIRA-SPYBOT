@@ -243,24 +243,19 @@ class SupabaseClient:
             return None
 
     async def get_message(self, message_id: int, chat_id: int = None):
+        """
+        Get a message by ID and optional chat_id
+        """
         try:
-            if chat_id is not None:
-                def _fetch():
-                    return self.client.table('messages')\
-                        .select('*')\
-                        .eq('message_id', message_id)\
-                        .eq('chat_id', chat_id)\
-                        .execute()
-            else:
-                def _fetch():
-                    return self.client.table('messages')\
-                        .select('*')\
-                        .eq('message_id', message_id)\
-                        .order('created_at', desc=True)\
-                        .limit(1)\
-                        .execute()
+            query = self.client.table('messages').select('*').eq('message_id', message_id)
+            if chat_id:
+                query = query.eq('chat_id', chat_id)
+            _fetch = query.execute()
             result = await self._run(_fetch)
-            return result.data[0] if result.data else None
+            # Исправление: проверяем, что result.data — список, и он не пустой
+            if isinstance(result.data, list) and result.data:
+                return result.data[0]
+            return None
         except Exception as e:
             logger.error(f"Error getting message: {e}")
             return None
