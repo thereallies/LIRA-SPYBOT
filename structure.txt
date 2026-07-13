@@ -1,0 +1,22 @@
+LIRA SPYBOT/
+├── config.py              # Конфигурация (токены, URL, валидация)
+├── main.py               # Точка входа
+├── requirements.txt      # Зависимости
+├── .env.example.txt      # Пример .env
+├── database/
+│   ├── __init__.py
+│   ├── supabase_client.py # Клиент Supabase (async-обертка)
+│   └── schema.sql        # SQL миграции
+├── handlers/
+│   ├── __init__.py
+│   ├── commands.py       # Обработчики команд
+│   └── events.py         # Обработчики событий (удаление/редактирование)
+├── services/
+│   └── __init__.py
+├── utils/
+│   ├── __init__.py
+│   ├── helpers.py        # Вспомогательные функции
+│   └── locale.py         # Загрузчик локализаций
+└── locales/
+    ├── ru.json
+    └── en.json

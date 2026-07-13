@@ -1,0 +1,53 @@
+{
+    "welcome": "👋 Hello, {name}!\n\nI'm Lira Spy Bot — a bot for tracking deleted and edited messages.",
+    "help": "📖 Bot Help",
+    "commands": {
+        "start": "Start working",
+        "help": "This help",
+        "add_chat": "Add chat for tracking",
+        "remove_chat": "Remove chat from tracking",
+        "list_chats": "List of tracked chats",
+        "settings": "Notification settings",
+        "stats": "Statistics",
+        "privacy": "Privacy policy"
+    },
+    "notifications": {
+        "deleted": "🗑 Message deleted",
+        "edited": "✏️ Message edited",
+        "from": "From",
+        "chat": "Chat",
+        "time": "Time",
+        "text": "Text",
+        "media": "Media",
+        "was": "Was",
+        "became": "Became"
+    },
+    "settings": {
+        "title": "⚙️ Notification Settings",
+        "notify_deleted": "Deletion notifications",
+        "notify_edited": "Edit notifications",
+        "save_media": "Save media",
+        "format": "Notification format"
+    },
+    "stats": {
+        "title": "📊 Your Statistics",
+        "total_messages": "Total messages",
+        "deleted": "Deleted",
+        "edited": "Edited"
+    },
+    "privacy": {
+        "title": "🔒 Privacy Policy"
+    },
+    "errors": {
+        "not_admin": "❌ Only admins can add chats!",
+        "not_group": "❌ This command works only in groups and channels!",
+        "db_error": "❌ Database error. Try again later.",
+        "chat_not_found": "❌ Chat not found in tracked list.",
+        "start_first": "❌ Run /start first"
+    },
+    "success": {
+        "chat_added": "✅ Chat {title} added for tracking!",
+        "chat_removed": "✅ Chat removed from tracking.",
+        "settings_updated": "✅ Settings updated."
+    }
+}
