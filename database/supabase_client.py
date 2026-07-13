@@ -41,7 +41,7 @@ class SupabaseClient:
             logger.error(f"Error adding message: {e}")
             return None
 
-    # ---------- Users (используем столбец 'id') ----------
+    # ---------- Users ----------
     async def get_user(self, user_id: int):
         try:
             result = await self._run(self.client.table('users').select('*').eq('id', user_id))
@@ -60,18 +60,17 @@ class SupabaseClient:
             logger.error(f"Error adding user: {e}")
             return None
 
-    # Метод create_user с необязательным phone
     async def create_user(self, user_id: int, first_name: str, last_name: str, username: str, phone: str = None):
-    user_data = {
-        'id': user_id,
-        'telegram_id': user_id,   # добавляем обязательное поле
-        'first_name': first_name,
-        'last_name': last_name,
-        'username': username,
-    }
-    if phone:
-        user_data['phone'] = phone
-    return await self.add_user(user_data)
+        user_data = {
+            'id': user_id,
+            'telegram_id': user_id,  # исправлено: добавляем обязательное поле
+            'first_name': first_name,
+            'last_name': last_name,
+            'username': username,
+        }
+        if phone:
+            user_data['phone'] = phone
+        return await self.add_user(user_data)
 
     async def update_user(self, user_id: int, update_data: dict):
         try:
