@@ -732,6 +732,10 @@ async def main():
         await asyncio.sleep(0.05)
 
 
+# ============================================================
+# ОБРАБОТЧИКИ РЕДАКТИРОВАНИЙ И УДАЛЕНИЙ (ИСПРАВЛЕНЫ)
+# ============================================================
+
 async def handle_edited_message(msg, is_business=False):
     chat_id = msg['chat']['id']
     message_id = msg['message_id']
@@ -749,7 +753,8 @@ async def handle_edited_message(msg, is_business=False):
         return
 
     old_msg = await db.get_message(message_id, chat_id)
-    if old_msg and old_msg.get('text') != new_text:
+    # ✅ ИСПРАВЛЕНИЕ: проверяем, что old_msg — словарь
+    if old_msg and isinstance(old_msg, dict) and old_msg.get('text') != new_text:
         await db.save_edited_message_raw({
             'original_message_id': old_msg.get('id'),
             'chat_id': chat_id,
@@ -783,7 +788,8 @@ async def handle_deleted_messages(update):
 
     for msg_id in message_ids:
         msg_data = await db.get_message(msg_id, chat_id)
-        if not msg_data:
+        # ✅ ИСПРАВЛЕНИЕ: проверяем, что msg_data — словарь
+        if not msg_data or not isinstance(msg_data, dict):
             continue
 
         from_user_id = msg_data.get('from_user_id')
