@@ -41,8 +41,7 @@ class SupabaseClient:
             logger.error(f"Error adding message: {e}")
             return None
 
-    # ---------- Users ----------
-    # Используем столбец 'id' (так как 'user_id' отсутствует)
+    # ---------- Users (используем столбец 'id') ----------
     async def get_user(self, user_id: int):
         try:
             result = await self._run(self.client.table('users').select('*').eq('id', user_id))
@@ -61,17 +60,17 @@ class SupabaseClient:
             logger.error(f"Error adding user: {e}")
             return None
 
-    # Метод create_user с правильной сигнатурой (5 параметров)
+    # Метод create_user с необязательным phone
     async def create_user(self, user_id: int, first_name: str, last_name: str, username: str, phone: str = None):
-    user_data = {
-        'id': user_id,
-        'first_name': first_name,
-        'last_name': last_name,
-        'username': username,
-    }
-    if phone:
-        user_data['phone'] = phone
-    return await self.add_user(user_data)
+        user_data = {
+            'id': user_id,
+            'first_name': first_name,
+            'last_name': last_name,
+            'username': username,
+        }
+        if phone:
+            user_data['phone'] = phone
+        return await self.add_user(user_data)
 
     async def update_user(self, user_id: int, update_data: dict):
         try:
