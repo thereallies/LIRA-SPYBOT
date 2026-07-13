@@ -8,12 +8,13 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 class SupabaseClient:
-    def __init__(self):
-        url = os.getenv('SUPABASE_URL')
-        key = os.getenv('SUPABASE_KEY')
-        if not url or not key:
-            raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set")
-        self.client = create_client(url, key)
+    def __init__(self, url: str = None, key: str = None):
+        # Если параметры переданы — используем их, иначе берём из .env
+        self.supabase_url = url or os.getenv('SUPABASE_URL')
+        self.supabase_key = key or os.getenv('SUPABASE_KEY')
+        if not self.supabase_url or not self.supabase_key:
+            raise ValueError("SUPABASE_URL and SUPABASE_KEY must be provided either as arguments or in .env")
+        self.client = create_client(self.supabase_url, self.supabase_key)
 
     async def _run(self, coro):
         loop = asyncio.get_running_loop()
