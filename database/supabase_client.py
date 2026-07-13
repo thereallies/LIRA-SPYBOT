@@ -191,3 +191,30 @@ class SupabaseClient:
         except Exception as e:
             logger.error(f"Error updating user settings: {e}")
             return None
+
+    # ---------- Admins ----------
+    async def get_admins(self):
+        try:
+            result = await self._run(self.client.table('admins').select('user_id'))
+            if isinstance(result.data, list):
+                return [row['user_id'] for row in result.data]
+            return []
+        except Exception as e:
+            logger.error(f"Error getting admins: {e}")
+            return []
+
+    async def add_admin(self, user_id: int):
+        try:
+            result = await self._run(self.client.table('admins').insert({'user_id': user_id}))
+            return True
+        except Exception as e:
+            logger.error(f"Error adding admin: {e}")
+            return False
+
+    async def remove_admin(self, user_id: int):
+        try:
+            await self._run(self.client.table('admins').delete().eq('user_id', user_id))
+            return True
+        except Exception as e:
+            logger.error(f"Error removing admin: {e}")
+            return False
