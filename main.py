@@ -1,6 +1,6 @@
 """
 Lira Spy Bot — Bot API + TDLib
-С сегментацией, настройками медиа и сохранением исчезающих фото
+С поддержкой исчезающих сообщений, фильтрами, админ-командами и инструкцией
 """
 import os
 import json
@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv('BOT_TOKEN', '')
 CREATOR_ID = 1658547011
-ADMIN_IDS = [CREATOR_ID]
 API_BASE = f"https://api.telegram.org/bot{BOT_TOKEN}"
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
@@ -33,11 +32,24 @@ os.makedirs('downloads', exist_ok=True)
 _settings_cache = {}
 _settings_cache_time = {}
 CACHE_TTL = 300
-
-# Фильтры в памяти
 _filters_cache = {}
 _filters_cache_time = {}
+_sent_notifications = {}
 
+# ============================================================
+# ЗАГРУЗКА АДМИНОВ ИЗ БД
+# ============================================================
+_admin_ids = []
+
+async def load_admins():
+    global _admin_ids
+    _admin_ids = await db.get_admins()
+    if CREATOR_ID not in _admin_ids:
+        _admin_ids.append(CREATOR_ID)  # создатель всегда админ
+    logger.info(f"Администраторы: {_admin_ids}")
+
+def is_admin(user_id):
+    return user_id in _admin_ids
 
 # ============================================================
 # API HELPERS
@@ -55,13 +67,11 @@ def api(method, data=None, files=None, retries=2):
             time.sleep(1)
     return None
 
-
 def send(chat_id, text, parse_mode='HTML', reply_markup=None):
     data = {'chat_id': chat_id, 'text': text, 'parse_mode': parse_mode}
     if reply_markup:
         data['reply_markup'] = json.dumps(reply_markup)
     return api('sendMessage', data)
-
 
 def answer_callback(callback_id, text='', show_alert=False):
     return api('answerCallbackQuery', {
@@ -69,7 +79,6 @@ def answer_callback(callback_id, text='', show_alert=False):
         'text': text,
         'show_alert': show_alert
     })
-
 
 def get_media_type(msg):
     if msg.get('photo'): return 'photo'
@@ -79,13 +88,28 @@ def get_media_type(msg):
     if msg.get('document'): return 'document'
     return None
 
+def is_secret_media(msg):
+    if 'media' in msg and isinstance(msg['media'], dict) and msg['media'].get('ttl_seconds'):
+        return True
+    for media_type in ['photo', 'video', 'voice', 'video_note', 'document']:
+        if media_type in msg:
+            item = msg[media_type]
+            if isinstance(item, dict) and item.get('ttl_seconds'):
+                return True
+            if media_type == 'photo' and isinstance(item, list) and item and item[-1].get('ttl_seconds'):
+                return True
+    return False
 
-def is_admin(user_id):
-    return user_id in ADMIN_IDS
-
+def is_duplicate(chat_id, message_id, event_type, ttl=5):
+    key = f"{chat_id}:{message_id}:{event_type}"
+    now = time.time()
+    if key in _sent_notifications and now - _sent_notifications[key] < ttl:
+        return True
+    _sent_notifications[key] = now
+    return False
 
 # ============================================================
-# КЭШ И ФИЛЬТРЫ (ИСПРАВЛЕНЫ)
+# КЭШ И ФИЛЬТРЫ (без изменений)
 # ============================================================
 
 def get_cached_settings(user_id):
@@ -108,11 +132,9 @@ def get_cached_settings(user_id):
     _settings_cache_time[user_id] = now
     return settings
 
-
 def invalidate_settings_cache(user_id):
     _settings_cache.pop(user_id, None)
     _settings_cache_time.pop(user_id, None)
-
 
 def get_user_filters(user_id):
     now = time.time()
@@ -132,15 +154,12 @@ def get_user_filters(user_id):
     _filters_cache_time[user_id] = now
     return filters
 
-
 def should_notify(user_id, chat_id, sender_id):
     filters = get_user_filters(user_id)
     if not filters:
         return True
-
     include = [f for f in filters if f['filter_type'] == 'include']
     exclude = [f for f in filters if f['filter_type'] == 'exclude']
-
     if include:
         for f in include:
             if f['target_type'] == 'chat' and f['target_id'] == chat_id:
@@ -148,18 +167,15 @@ def should_notify(user_id, chat_id, sender_id):
             if f['target_type'] == 'user' and f['target_id'] == sender_id:
                 return True
         return False
-
     for f in exclude:
         if f['target_type'] == 'chat' and f['target_id'] == chat_id:
             return False
         if f['target_type'] == 'user' and f['target_id'] == sender_id:
             return False
-
     return True
 
-
 # ============================================================
-# TDLib ИНТЕГРАЦИЯ
+# TDLib (без изменений)
 # ============================================================
 
 class TDLibClient:
@@ -200,11 +216,7 @@ class TDLibClient:
         return None
 
     def download_file(self, file_id, path):
-        request = {
-            '@type': 'downloadFile',
-            'file_id': file_id,
-            'priority': 1
-        }
+        request = {'@type': 'downloadFile', 'file_id': file_id, 'priority': 1}
         return self.send_request(request)
 
     def stop(self):
@@ -212,12 +224,10 @@ class TDLibClient:
             self.process.terminate()
             self.connected = False
 
-
 tdlib = TDLibClient()
 
-
 # ============================================================
-# MEDIA HANDLING
+# MEDIA HANDLING (с поддержкой @username и caption_extra)
 # ============================================================
 
 def download_telegram_file(file_id):
@@ -239,12 +249,14 @@ def download_telegram_file(file_id):
         logger.error(f"Download error: {e}")
         return None
 
-
-def send_media_to_admin(msg, chat_id):
+def send_media_to_admin(msg, chat_id, caption_extra=''):
     sender = msg.get('from', {})
     sender_name = sender.get('first_name', 'Unknown')
-    sender_id = sender.get('id', 0)
-    caption = f"📎 <b>Медиа</b>\n👤 {sender_name} | 💬 Чат: {chat_id}"
+    sender_username = sender.get('username')
+    mention = f"@{sender_username}" if sender_username else sender_name
+    caption = f"📎 <b>Медиа</b>\n👤 {mention} | 💬 Чат: {chat_id}"
+    if caption_extra:
+        caption += f"\n{caption_extra}"
 
     if msg.get('photo'):
         file_id = msg['photo'][-1]['file_id']
@@ -266,22 +278,22 @@ def send_media_to_admin(msg, chat_id):
     try:
         with open(local, 'rb') as f:
             if msg.get('photo'):
-                for admin_id in ADMIN_IDS:
+                for admin_id in _admin_ids:
                     api('sendPhoto', {'chat_id': admin_id, 'caption': caption, 'parse_mode': 'HTML'},
                         files={'photo': f})
             elif msg.get('video'):
-                for admin_id in ADMIN_IDS:
+                for admin_id in _admin_ids:
                     api('sendVideo', {'chat_id': admin_id, 'caption': caption, 'parse_mode': 'HTML'},
                         files={'video': f})
             elif msg.get('voice'):
-                for admin_id in ADMIN_IDS:
+                for admin_id in _admin_ids:
                     api('sendVoice', {'chat_id': admin_id, 'caption': caption, 'parse_mode': 'HTML'},
                         files={'voice': f})
             elif msg.get('video_note'):
-                for admin_id in ADMIN_IDS:
+                for admin_id in _admin_ids:
                     api('sendVideoNote', {'chat_id': admin_id}, files={'video_note': f})
             else:
-                for admin_id in ADMIN_IDS:
+                for admin_id in _admin_ids:
                     api('sendDocument', {'chat_id': admin_id, 'caption': caption, 'parse_mode': 'HTML'},
                         files={'document': f})
     except Exception as e:
@@ -291,12 +303,10 @@ def send_media_to_admin(msg, chat_id):
             os.remove(local)
         except Exception:
             pass
-
     return True
 
-
 # ============================================================
-# КЛАВИАТУРЫ
+# КЛАВИАТУРЫ (обновлены с учётом инструкций)
 # ============================================================
 
 def main_menu(is_admin_user=False):
@@ -308,9 +318,8 @@ def main_menu(is_admin_user=False):
          {'text': '👥 Рефералка', 'callback_data': 'referral'}],
     ]
     if is_admin_user:
-        buttons.append([{'text': '👑 Админ', 'callback_data': 'admin'}])
+        buttons.append([{'text': '👑 Админ-панель', 'callback_data': 'admin'}])
     return {'inline_keyboard': buttons}
-
 
 def settings_kb(user_id):
     s = get_cached_settings(user_id)
@@ -324,7 +333,6 @@ def settings_kb(user_id):
         [{'text': '◀️ Назад', 'callback_data': 'main'}],
     ]}
 
-
 def filters_kb(user_id):
     filters = get_user_filters(user_id)
     count = len(filters)
@@ -336,15 +344,14 @@ def filters_kb(user_id):
         [{'text': '◀️ Назад', 'callback_data': 'main'}],
     ]}
 
-
 def instructions_kb():
     return {'inline_keyboard': [
         [{'text': '🔌 Как подключить', 'callback_data': 'how_connect'}],
-        [{'text': '📸 Медиа', 'callback_data': 'how_media'}],
+        [{'text': '📸 Медиа и исчезающие', 'callback_data': 'how_media'}],
         [{'text': '🎯 Фильтры', 'callback_data': 'how_filters'}],
+        [{'text': '👑 Админ-команды', 'callback_data': 'how_admin'}],
         [{'text': '◀️ Назад', 'callback_data': 'main'}],
     ]}
-
 
 def admin_kb():
     return {'inline_keyboard': [
@@ -352,9 +359,9 @@ def admin_kb():
         [{'text': '📊 Статистика', 'callback_data': 'adm_stats'}],
         [{'text': '📋 Удаления', 'callback_data': 'adm_deleted'}],
         [{'text': '📋 Редактирования', 'callback_data': 'adm_edited'}],
+        [{'text': '➕ Выдать доступ', 'callback_data': 'adm_grant'}],
         [{'text': '◀️ Назад', 'callback_data': 'main'}],
     ]}
-
 
 # ============================================================
 # USER MANAGEMENT
@@ -372,12 +379,11 @@ async def register_user(msg, is_business=False):
         return
     existing = await db.get_user(user_id)
     if not existing:
-        role = 'admin' if user_id in ADMIN_IDS else 'user'
+        role = 'admin' if user_id in _admin_ids else 'user'
         await db.create_user(user_id, username, sender.get('first_name'), role)
 
-
 # ============================================================
-# MESSAGE HANDLERS
+# MESSAGE HANDLERS (обновлены с учётом админ-команд)
 # ============================================================
 
 async def handle_message(msg, is_business=False):
@@ -403,16 +409,22 @@ async def handle_message(msg, is_business=False):
     except Exception:
         pass
 
-    if is_business and media_type:
-        s = get_cached_settings(CREATOR_ID)
-        if s.get('notify_media') and should_notify(CREATOR_ID, chat_id, user_id):
-            send_media_to_admin(msg, chat_id)
+    if media_type:
+        reply = msg.get('reply_to_message')
+        is_secret_reply = False
+        if reply and is_secret_media(reply):
+            is_secret_reply = True
+        if is_business or is_secret_reply:
+            s = get_cached_settings(CREATOR_ID)  # пока используем настройки создателя
+            if s.get('notify_media') and should_notify(CREATOR_ID, chat_id, user_id):
+                extra = "🔥 Исчезающее" if is_secret_reply else ""
+                send_media_to_admin(msg, chat_id, caption_extra=extra)
 
     if not is_business:
         if text == '/start':
             await cmd_start(chat_id, msg.get('from'))
         elif text == '/help':
-            send(chat_id, "📖 Используй /start для главного меню")
+            await cmd_help(chat_id)
         elif text == '/myid':
             send(chat_id, f"🆔 <code>{user_id}</code>")
         elif text == '/settings':
@@ -428,15 +440,53 @@ async def handle_message(msg, is_business=False):
         elif text.startswith('/ban ') and is_admin(user_id):
             try:
                 target = int(text.split()[1])
-                if target not in ADMIN_IDS:
+                if target not in _admin_ids:
                     await db.update_user(target, {'status': 'banned'})
                     send(chat_id, f"✅ Заблокирован <code>{target}</code>")
             except (ValueError, IndexError):
                 send(chat_id, "❌ /ban <code>ID</code>")
-
+        elif text.startswith('/grant ') and is_admin(user_id):
+            # /grant <user_id>
+            parts = text.split()
+            if len(parts) == 2:
+                try:
+                    target = int(parts[1])
+                    if target not in _admin_ids:
+                        if await db.add_admin(target):
+                            _admin_ids.append(target)
+                            send(chat_id, f"✅ Пользователь <code>{target}</code> получил доступ.")
+                            # Отправляем уведомление новому админу
+                            send(target, "🎉 Вам выдан доступ к боту Lira Spy Bot! Теперь вы будете получать уведомления.")
+                        else:
+                            send(chat_id, "❌ Ошибка добавления.")
+                    else:
+                        send(chat_id, "ℹ️ Пользователь уже имеет доступ.")
+                except ValueError:
+                    send(chat_id, "❌ Неверный формат. Используйте: /grant <user_id>")
+            else:
+                send(chat_id, "❌ Используйте: /grant <user_id>")
+        elif text.startswith('/revoke ') and is_admin(user_id):
+            parts = text.split()
+            if len(parts) == 2:
+                try:
+                    target = int(parts[1])
+                    if target == CREATOR_ID:
+                        send(chat_id, "❌ Нельзя отозвать доступ у создателя.")
+                    elif target in _admin_ids:
+                        if await db.remove_admin(target):
+                            _admin_ids.remove(target)
+                            send(chat_id, f"✅ Доступ отозван у <code>{target}</code>.")
+                        else:
+                            send(chat_id, "❌ Ошибка удаления.")
+                    else:
+                        send(chat_id, "ℹ️ Пользователь не имеет доступа.")
+                except ValueError:
+                    send(chat_id, "❌ Неверный формат. Используйте: /revoke <user_id>")
+            else:
+                send(chat_id, "❌ Используйте: /revoke <user_id>")
 
 # ============================================================
-# CALLBACK HANDLER
+# CALLBACK HANDLER (добавлен пункт выдачи доступа)
 # ============================================================
 
 async def handle_callback(query):
@@ -453,43 +503,35 @@ async def handle_callback(query):
     if data == 'main':
         send(chat_id, "👋 <b>Lira Spy Bot</b>\n\nВыберите действие:",
              reply_markup=main_menu(is_admin(user_id)))
-
     elif data == 'connect':
         send(chat_id,
             "🔌 <b>Подключение</b>\n\n"
             "1. Настройки → Аккаунт → Автоматизация чатов\n"
             "2. Введи <b>@liraspy_bot</b>\n"
             "3. Добавить")
-
     elif data == 'instructions':
         send(chat_id, "📋 <b>Инструкции</b>", reply_markup=instructions_kb())
-
     elif data == 'settings':
         send(chat_id, "⚙️ <b>Настройки</b>", reply_markup=settings_kb(user_id))
-
     elif data == 'toggle_del':
         s = get_cached_settings(user_id)
         await db.update_user_settings(user_id, {'notify_deleted': not s.get('notify_deleted', True)})
         invalidate_settings_cache(user_id)
         send(chat_id, "⚙️ <b>Настройки</b>", reply_markup=settings_kb(user_id))
-
     elif data == 'toggle_edt':
         s = get_cached_settings(user_id)
         await db.update_user_settings(user_id, {'notify_edited': not s.get('notify_edited', True)})
         invalidate_settings_cache(user_id)
         send(chat_id, "⚙️ <b>Настройки</b>", reply_markup=settings_kb(user_id))
-
     elif data == 'toggle_media':
         s = get_cached_settings(user_id)
         new_val = not s.get('notify_media', True)
         s['notify_media'] = new_val
         _settings_cache[user_id] = s
         send(chat_id, "⚙️ <b>Настройки</b>", reply_markup=settings_kb(user_id))
-
     elif data == 'filters':
         send(chat_id, "🎯 <b>Фильтры</b>\n\nВыберите что отслеживать:",
              reply_markup=filters_kb(user_id))
-
     elif data == 'filter_list':
         filters = get_user_filters(user_id)
         if not filters:
@@ -502,19 +544,16 @@ async def handle_callback(query):
                 name = f.get('target_name', str(f['target_id']))
                 text += f"{icon} {target}: <code>{name}</code>\n"
             send(chat_id, text)
-
     elif data == 'filter_add_chat':
         send(chat_id,
             "➕ <b>Добавить чат</b>\n\n"
             "Отправьте ID чата или @username\n"
             "Пример: <code>-1001234567890</code> или <code>@groupname</code>")
-
     elif data == 'filter_add_user':
         send(chat_id,
             "➕ <b>Добавить пользователя</b>\n\n"
             "Отправьте ID пользователя или @username\n"
             "Пример: <code>123456789</code> или <code>@username</code>")
-
     elif data == 'filter_clear':
         try:
             requests.delete(f"{SUPABASE_URL}/rest/v1/user_filters",
@@ -525,43 +564,51 @@ async def handle_callback(query):
             send(chat_id, "✅ Все фильтры удалены. Бот отслеживает всё.")
         except Exception:
             send(chat_id, "❌ Ошибка удаления фильтров")
-
     elif data == 'how_connect':
         send(chat_id,
-            "🔌 <b>Как подключить</b>\n\n"
-            "1. Настройки → Аккаунт → Автоматизация чатов\n"
-            "2. Введи <b>@liraspy_bot</b>\n"
-            "3. Добавить")
-
+            "🔌 <b>Как подключить бота</b>\n\n"
+            "1. Откройте настройки Telegram\n"
+            "2. Перейдите в раздел «Аккаунт» → «Автоматизация чатов»\n"
+            "3. Введите @liraspy_bot\n"
+            "4. Нажмите «Добавить»\n\n"
+            "Теперь бот будет отслеживать все сообщения в ваших бизнес-чатах.")
     elif data == 'how_media':
         send(chat_id,
-            "📸 <b>Медиа</b>\n\n"
-            "Бот скачивает и пересылает:\n"
-            "• Фото и видео\n"
-            "• Голосовые\n"
-            "• Документы\n"
-            "• Видеокружки\n\n"
-            "Включить/выключить: ⚙️ Настройки → Медиа")
-
+            "📸 <b>Медиа и исчезающие сообщения</b>\n\n"
+            "Бот автоматически пересылает все медиафайлы (фото, видео, голосовые, документы).\n\n"
+            "🔥 <b>Исчезающие сообщения</b>:\n"
+            "Если кто-то отправляет фото/видео с таймером, вы можете ответить на это сообщение.\n"
+            "Бот перешлёт содержимое админу как обычное медиа (без таймера).\n\n"
+            "Включить/выключить уведомления о медиа можно в настройках.")
     elif data == 'how_filters':
         send(chat_id,
             "🎯 <b>Фильтры</b>\n\n"
-            "Позволяют выбрать от кого получать уведомления.\n\n"
-            "<b>Типы фильтров:</b>\n"
-            "➕ Include — уведомлять ТОЛЬКО от этих чатов/юзеров\n"
-            "➖ Exclude — НЕ уведомлять от этих чатов/юзеров\n\n"
-            "Пример: добавьте exclude для чата с мамой, чтобы не спамить.")
-
+            "Фильтры позволяют выбирать, от кого получать уведомления.\n\n"
+            "➕ <b>Include</b> — уведомлять ТОЛЬКО от этих чатов/пользователей.\n"
+            "➖ <b>Exclude</b> — НЕ уведомлять от этих чатов/пользователей.\n\n"
+            "Если нет ни одного фильтра, бот уведомляет обо всём.\n\n"
+            "Пример: добавьте exclude для чата с мамой, чтобы не получать спам.")
+    elif data == 'how_admin':
+        text = (
+            "👑 <b>Админ-команды</b>\n\n"
+            "Доступны только администраторам (выдаются через /grant).\n\n"
+            "• /grant <user_id> — выдать доступ другому пользователю.\n"
+            "• /revoke <user_id> — отозвать доступ.\n"
+            "• /broadcast <текст> — отправить сообщение всем пользователям.\n"
+            "• /ban <user_id> — заблокировать пользователя.\n"
+            "• /myid — показать свой ID.\n\n"
+            "Для выдачи доступа администратор должен знать ID пользователя.\n"
+            "Пользователь может узнать свой ID командой /myid."
+        )
+        send(chat_id, text)
     elif data == 'referral':
         send(chat_id,
             "👥 <b>Реферальная программа</b>\n\n"
             "Приглашай друзей!\n"
             "Ссылка: @liraspy_bot\n\n"
             "Скоро будут бонусы!")
-
     elif data == 'admin' and is_admin(user_id):
         send(chat_id, "👑 <b>Админ-панель</b>", reply_markup=admin_kb())
-
     elif data == 'adm_users':
         users = await db.get_all_users()
         text = f"👥 <b>Пользователи ({len(users)}):</b>\n\n"
@@ -571,14 +618,12 @@ async def handle_callback(query):
             n = u.get('first_name', '?')
             text += f"{i}. {s} {r} <b>{n}</b>\n"
         send(chat_id, text)
-
     elif data == 'adm_stats':
         users = await db.get_all_users()
         active = len([u for u in users if u.get('status') == 'active'])
         try:
-            resp = requests.get(f"{SUPABASE_URL}/rest/v1/messages", params={
-                'select': 'id', 'count': 'exact'
-            }, headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'}, timeout=5)
+            resp = requests.get(f"{SUPABASE_URL}/rest/v1/messages", params={'select': 'id', 'count': 'exact'},
+                headers={'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}'}, timeout=5)
             total_msgs = resp.headers.get('content-range', '*/0').split('/')[1]
         except Exception:
             total_msgs = '?'
@@ -586,7 +631,6 @@ async def handle_callback(query):
             f"📊 <b>Статистика</b>\n\n"
             f"👥 Пользователей: {len(users)} (активных: {active})\n"
             f"💬 Сообщений: {total_msgs}")
-
     elif data == 'adm_deleted':
         try:
             resp = requests.get(f"{SUPABASE_URL}/rest/v1/deleted_messages", params={
@@ -605,7 +649,6 @@ async def handle_callback(query):
                 txt = (d.get('original_text') or '')[:50]
                 text += f"• {name}: {txt}\n"
             send(chat_id, text)
-
     elif data == 'adm_edited':
         try:
             resp = requests.get(f"{SUPABASE_URL}/rest/v1/edited_messages", params={
@@ -625,29 +668,47 @@ async def handle_callback(query):
                 new = (e.get('new_text') or '')[:30]
                 text += f"• {name}: {old} → {new}\n"
             send(chat_id, text)
-
+    elif data == 'adm_grant' and is_admin(user_id):
+        send(chat_id,
+            "➕ <b>Выдача доступа</b>\n\n"
+            "Отправьте команду:\n"
+            "<code>/grant &lt;user_id&gt;</code>\n\n"
+            "Пользователь должен знать свой ID (команда /myid).")
 
 # ============================================================
-# BOT COMMANDS
+# BOT COMMANDS /help, /start
 # ============================================================
 
 async def cmd_start(chat_id, user=None):
     name = user.get('first_name', '') if user else ''
     text = (
         f"👋 <b>Добро пожаловать, {name}!</b>\n\n"
-        "Отслеживание удалённых и отредактированных сообщений.\n\n"
-        "<b>Возможности:</b>\n"
-        "• 🗑 Удалённые сообщения\n"
-        "• ✏️ Отредактированные сообщения\n"
-        "• 📸 Медиа (фото, видео, голосовые)\n"
-        "• 🎯 Фильтры — выбирай от кого получать\n\n"
-        "Подключите бота:\n"
-        "1. Настройки → Аккаунт → Автоматизация чатов\n"
-        "2. Введите <b>@liraspy_bot</b>\n"
-        "3. Добавить"
+        "Я — <b>Lira Spy Bot</b>, помогаю отслеживать удалённые, отредактированные и исчезающие сообщения.\n\n"
+        "📌 <b>Быстрый старт:</b>\n"
+        "1. Подключите бота к бизнес-чатам (кнопка «Подключить»).\n"
+        "2. Настройте уведомления в «Настройки».\n"
+        "3. Используйте фильтры, чтобы не получать лишнего.\n\n"
+        "🔥 <b>Исчезающие сообщения</b> — ответьте на такое сообщение, и бот перешлёт его вам.\n\n"
+        "Подробнее — в разделе «Инструкции»."
     )
     send(chat_id, text, reply_markup=main_menu(is_admin(user.get('id') if user else 0)))
 
+async def cmd_help(chat_id):
+    text = (
+        "📖 <b>Помощь по боту</b>\n\n"
+        "• /start — главное меню\n"
+        "• /settings — настройки уведомлений\n"
+        "• /filters — управление фильтрами\n"
+        "• /myid — показать ваш ID\n"
+        "• /help — эта справка\n\n"
+        "Для администраторов:\n"
+        "• /grant <user_id> — выдать доступ\n"
+        "• /revoke <user_id> — отозвать доступ\n"
+        "• /broadcast <текст> — массовая рассылка\n"
+        "• /ban <user_id> — заблокировать пользователя\n\n"
+        "Подробные инструкции — в главном меню → «Инструкции»."
+    )
+    send(chat_id, text)
 
 # ============================================================
 # MAIN LOOP
@@ -674,25 +735,24 @@ def get_updates():
         pass
     return []
 
-
 async def main():
     logger.info("Bot starting...")
+    # Загружаем администраторов из БД
+    await load_admins()
     me = api('getMe')
     if me and me.get('ok'):
         logger.info(f"Bot: @{me['result'].get('username')}")
-
     if tdlib.start():
         logger.info("TDLib started for media downloads")
-
     api('setMyCommands', {
         'commands': [
             {'command': 'start', 'description': 'Главное меню'},
             {'command': 'settings', 'description': 'Настройки'},
             {'command': 'filters', 'description': 'Фильтры'},
             {'command': 'myid', 'description': 'Мой ID'},
+            {'command': 'help', 'description': 'Помощь'},
         ]
     })
-
     logger.info("Listening...")
     while True:
         updates = get_updates()
@@ -714,9 +774,8 @@ async def main():
                 logger.error(f"Error: {e}")
         await asyncio.sleep(0.05)
 
-
 # ============================================================
-# ОБРАБОТЧИКИ РЕДАКТИРОВАНИЙ И УДАЛЕНИЙ (ИСПРАВЛЕНЫ)
+# ОБРАБОТЧИКИ РЕДАКТИРОВАНИЙ И УДАЛЕНИЙ (с учётом админов)
 # ============================================================
 
 async def handle_edited_message(msg, is_business=False):
@@ -727,77 +786,86 @@ async def handle_edited_message(msg, is_business=False):
 
     if user_id == CREATOR_ID:
         return
-
-    s = get_cached_settings(CREATOR_ID)
-    if not s.get('notify_edited'):
+    if is_duplicate(chat_id, message_id, 'edit'):
         return
 
-    if not should_notify(CREATOR_ID, chat_id, user_id):
-        return
+    # Отправляем уведомление всем админам (у которых включены настройки)
+    for admin_id in _admin_ids:
+        s = get_cached_settings(admin_id)
+        if not s.get('notify_edited'):
+            continue
+        if not should_notify(admin_id, chat_id, user_id):
+            continue
 
-    old_msg = await db.get_message(message_id, chat_id)
-    if old_msg and isinstance(old_msg, dict) and old_msg.get('text') != new_text:
-        await db.save_edited_message_raw({
-            'original_message_id': old_msg.get('id'),
-            'chat_id': chat_id,
-            'from_user_id': user_id,
-            'from_username': msg.get('from', {}).get('username'),
-            'old_text': old_msg.get('text', ''),
-            'new_text': new_text,
-            'sent_at': old_msg.get('sent_at'),
-        })
-        await db.update_message_text(message_id, chat_id, new_text)
+        old_msg = await db.get_message(message_id, chat_id)
+        if old_msg and isinstance(old_msg, dict) and old_msg.get('text') != new_text:
+            # Сохраняем в БД только один раз (по первому админу)
+            if admin_id == _admin_ids[0]:
+                await db.save_edited_message_raw({
+                    'original_message_id': old_msg.get('id'),
+                    'chat_id': chat_id,
+                    'from_user_id': user_id,
+                    'from_username': msg.get('from', {}).get('username'),
+                    'old_text': old_msg.get('text', ''),
+                    'new_text': new_text,
+                    'sent_at': old_msg.get('sent_at'),
+                })
+                await db.update_message_text(message_id, chat_id, new_text)
 
-        sender = msg.get('from', {}).get('first_name', 'Unknown')
-        old_p = (old_msg.get('text', '') or '')[:150]
-        new_p = (new_text or '')[:150]
-
-        for admin_id in ADMIN_IDS:
+            sender = msg.get('from', {})
+            sender_name = sender.get('first_name', 'Unknown')
+            sender_username = sender.get('username')
+            mention = f"@{sender_username}" if sender_username else sender_name
+            old_p = (old_msg.get('text', '') or '')[:150]
+            new_p = (new_text or '')[:150]
             send(admin_id,
                 f"✏️ <b>Редактирование</b>\n\n"
-                f"👤 {sender} | 💬 Чат: {chat_id}\n\n"
+                f"👤 {mention} | 💬 Чат: {chat_id}\n\n"
                 f"❌ <code>{old_p}</code>\n"
                 f"✅ <code>{new_p}</code>")
-
 
 async def handle_deleted_messages(update):
     chat_id = update.get('chat', {}).get('id')
     message_ids = update.get('message_ids', [])
 
-    s = get_cached_settings(CREATOR_ID)
-    if not s.get('notify_deleted'):
-        return
-
-    for msg_id in message_ids:
-        msg_data = await db.get_message(msg_id, chat_id)
-        if not msg_data or not isinstance(msg_data, dict):
+    for admin_id in _admin_ids:
+        s = get_cached_settings(admin_id)
+        if not s.get('notify_deleted'):
             continue
 
-        from_user_id = msg_data.get('from_user_id')
-        if from_user_id == CREATOR_ID:
-            continue
+        for msg_id in message_ids:
+            if is_duplicate(chat_id, msg_id, f'delete_{admin_id}'):
+                continue
 
-        if not should_notify(CREATOR_ID, chat_id, from_user_id):
-            continue
+            msg_data = await db.get_message(msg_id, chat_id)
+            if not msg_data or not isinstance(msg_data, dict):
+                continue
 
-        await db.save_deleted_message_raw({
-            'original_message_id': msg_data.get('id'),
-            'chat_id': chat_id,
-            'from_user_id': from_user_id,
-            'from_username': msg_data.get('from_username'),
-            'original_text': msg_data.get('text'),
-            'media_type': msg_data.get('media_type'),
-            'sent_at': msg_data.get('sent_at'),
-        })
+            from_user_id = msg_data.get('from_user_id')
+            if from_user_id == admin_id:  # не отправляем самому себе
+                continue
+            if not should_notify(admin_id, chat_id, from_user_id):
+                continue
 
-        text = (msg_data.get('text', '') or '')[:200]
-        username = msg_data.get('from_username') or 'Unknown'
-        for admin_id in ADMIN_IDS:
+            # Сохраняем удаление только для первого админа (чтобы не дублировать записи)
+            if admin_id == _admin_ids[0]:
+                await db.save_deleted_message_raw({
+                    'original_message_id': msg_data.get('id'),
+                    'chat_id': chat_id,
+                    'from_user_id': from_user_id,
+                    'from_username': msg_data.get('from_username'),
+                    'original_text': msg_data.get('text'),
+                    'media_type': msg_data.get('media_type'),
+                    'sent_at': msg_data.get('sent_at'),
+                })
+
+            text = (msg_data.get('text', '') or '')[:200]
+            username = msg_data.get('from_username')
+            mention = f"@{username}" if username else 'Unknown'
             send(admin_id,
                 f"🗑 <b>Удалено</b>\n\n"
-                f"👤 {username} | 💬 Чат: {chat_id}\n"
+                f"👤 {mention} | 💬 Чат: {chat_id}\n"
                 f"📝 {text}")
-
 
 if __name__ == '__main__':
     asyncio.run(main())
