@@ -42,7 +42,6 @@ class SupabaseClient:
             return None
 
     async def save_message_raw(self, data: dict):
-        """Сохранение сырого сообщения (для main.py)"""
         try:
             result = await self._run(self.client.table('messages').insert(data))
             return result.data[0] if isinstance(result.data, list) and result.data else None
@@ -51,7 +50,6 @@ class SupabaseClient:
             return None
 
     async def update_message_text(self, message_id: int, chat_id: int, new_text: str):
-        """Обновление текста сообщения (при редактировании)"""
         try:
             result = await self._run(
                 self.client.table('messages')
@@ -65,7 +63,6 @@ class SupabaseClient:
             return None
 
     async def save_edited_message_raw(self, data: dict):
-        """Сохранение записи о редактировании"""
         try:
             result = await self._run(self.client.table('edited_messages').insert(data))
             return result.data[0] if isinstance(result.data, list) and result.data else None
@@ -74,7 +71,6 @@ class SupabaseClient:
             return None
 
     async def save_deleted_message_raw(self, data: dict):
-        """Сохранение записи об удалении"""
         try:
             result = await self._run(self.client.table('deleted_messages').insert(data))
             return result.data[0] if isinstance(result.data, list) and result.data else None
@@ -94,18 +90,21 @@ class SupabaseClient:
             return None
 
     async def add_user(self, user_data: dict):
+        # Используем upsert, чтобы избежать конфликтов дубликатов
         try:
-            result = await self._run(self.client.table('users').insert(user_data))
+            result = await self._run(
+                self.client.table('users').upsert(user_data, on_conflict='telegram_id')
+            )
             return result.data[0] if isinstance(result.data, list) and result.data else None
         except Exception as e:
             logger.error(f"Error adding user: {e}")
             return None
 
-    # Исправленная сигнатура для main.py
+    # Сигнатура соответствует вызову в main.py
     async def create_user(self, user_id: int, username: str, first_name: str, role: str = 'user'):
         user_data = {
             'id': user_id,
-            'telegram_id': user_id,          # обязательное поле
+            'telegram_id': user_id,
             'username': username,
             'first_name': first_name,
             'role': role,
@@ -122,7 +121,6 @@ class SupabaseClient:
             return None
 
     async def get_all_users(self):
-        """Получение всех пользователей"""
         try:
             result = await self._run(self.client.table('users').select('*'))
             return result.data if isinstance(result.data, list) else []
@@ -131,7 +129,6 @@ class SupabaseClient:
             return []
 
     async def get_all_active_user_ids(self):
-        """Получение ID всех активных пользователей"""
         try:
             result = await self._run(self.client.table('users').select('id').eq('status', 'active'))
             if isinstance(result.data, list):
