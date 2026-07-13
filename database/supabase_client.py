@@ -1,6 +1,7 @@
 import os
 import logging
-from supabase import create_async_client
+import asyncio
+from supabase import create_client
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
@@ -12,14 +13,18 @@ class SupabaseClient:
         key = os.getenv('SUPABASE_KEY')
         if not url or not key:
             raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set")
-        self.client = create_async_client(url, key)
+        self.client = create_client(url, key)
+
+    async def _run(self, coro):
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, coro.execute)
 
     async def get_message(self, message_id: int, chat_id: int = None):
         try:
             query = self.client.table('messages').select('*').eq('message_id', message_id)
             if chat_id:
                 query = query.eq('chat_id', chat_id)
-            result = await query.execute()
+            result = await self._run(query)
             if isinstance(result.data, list) and result.data:
                 return result.data[0]
             return None
@@ -29,7 +34,7 @@ class SupabaseClient:
 
     async def add_message(self, message_data: dict):
         try:
-            result = await self.client.table('messages').insert(message_data).execute()
+            result = await self._run(self.client.table('messages').insert(message_data))
             return result.data[0] if result.data else None
         except Exception as e:
             logger.error(f"Error adding message: {e}")
@@ -37,7 +42,7 @@ class SupabaseClient:
 
     async def get_user(self, user_id: int):
         try:
-            result = await self.client.table('users').select('*').eq('user_id', user_id).execute()
+            result = await self._run(self.client.table('users').select('*').eq('user_id', user_id))
             if isinstance(result.data, list) and result.data:
                 return result.data[0]
             return None
@@ -47,7 +52,7 @@ class SupabaseClient:
 
     async def add_user(self, user_data: dict):
         try:
-            result = await self.client.table('users').insert(user_data).execute()
+            result = await self._run(self.client.table('users').insert(user_data))
             return result.data[0] if result.data else None
         except Exception as e:
             logger.error(f"Error adding user: {e}")
@@ -55,7 +60,7 @@ class SupabaseClient:
 
     async def update_user(self, user_id: int, update_data: dict):
         try:
-            result = await self.client.table('users').update(update_data).eq('user_id', user_id).execute()
+            result = await self._run(self.client.table('users').update(update_data).eq('user_id', user_id))
             return result.data[0] if result.data else None
         except Exception as e:
             logger.error(f"Error updating user: {e}")
@@ -63,7 +68,7 @@ class SupabaseClient:
 
     async def get_session(self, user_id: int):
         try:
-            result = await self.client.table('sessions').select('*').eq('user_id', user_id).execute()
+            result = await self._run(self.client.table('sessions').select('*').eq('user_id', user_id))
             if isinstance(result.data, list) and result.data:
                 return result.data[0]
             return None
@@ -73,7 +78,7 @@ class SupabaseClient:
 
     async def add_session(self, session_data: dict):
         try:
-            result = await self.client.table('sessions').insert(session_data).execute()
+            result = await self._run(self.client.table('sessions').insert(session_data))
             return result.data[0] if result.data else None
         except Exception as e:
             logger.error(f"Error adding session: {e}")
@@ -81,7 +86,7 @@ class SupabaseClient:
 
     async def update_session(self, user_id: int, update_data: dict):
         try:
-            result = await self.client.table('sessions').update(update_data).eq('user_id', user_id).execute()
+            result = await self._run(self.client.table('sessions').update(update_data).eq('user_id', user_id))
             return result.data[0] if result.data else None
         except Exception as e:
             logger.error(f"Error updating session: {e}")
@@ -89,7 +94,7 @@ class SupabaseClient:
 
     async def get_user_settings(self, user_id: int):
         try:
-            result = await self.client.table('user_settings').select('*').eq('user_id', user_id).execute()
+            result = await self._run(self.client.table('user_settings').select('*').eq('user_id', user_id))
             if isinstance(result.data, list) and result.data:
                 return result.data[0]
             return None
@@ -99,7 +104,7 @@ class SupabaseClient:
 
     async def add_user_settings(self, settings_data: dict):
         try:
-            result = await self.client.table('user_settings').insert(settings_data).execute()
+            result = await self._run(self.client.table('user_settings').insert(settings_data))
             return result.data[0] if result.data else None
         except Exception as e:
             logger.error(f"Error adding user settings: {e}")
@@ -107,7 +112,7 @@ class SupabaseClient:
 
     async def update_user_settings(self, user_id: int, update_data: dict):
         try:
-            result = await self.client.table('user_settings').update(update_data).eq('user_id', user_id).execute()
+            result = await self._run(self.client.table('user_settings').update(update_data).eq('user_id', user_id))
             return result.data[0] if result.data else None
         except Exception as e:
             logger.error(f"Error updating user settings: {e}")
